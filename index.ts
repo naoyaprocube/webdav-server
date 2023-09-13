@@ -1,6 +1,13 @@
 const webdav = require('webdav-server').v2;
 const mfs = require('./MongoFS')
+const msm = require('./MongoSM')
 const mongoose = require('mongoose');
+const fs = require('node:fs');
+
+// const options = {
+//   key: fs.readFileSync('./privatekey.pem', 'utf8'),
+//   cert: fs.readFileSync('./cert.pem', 'utf8'),
+// };
 
 const url = process.env.DATABASE_URL ? process.env.DATABASE_URL : "mongodb://localhost:27017/files_db"
 try {
@@ -28,7 +35,9 @@ const server = new webdav.WebDAVServer({
   httpAuthentication: new webdav.HTTPDigestAuthentication(userManager, 'Default realm'),
   privilegeManager: privilegeManager,
   rootFileSystem: new mfs.MongoFS(),
-  port: 1900, // Load the server on the port 2000 (if not specified, default is 1900)
+  storageManager: new msm.MongoSM(),
+  port: 8080, // Load the server on the port 2000 (if not specified, default is 1900)
+  // https: options,
 });
 
 server.start(() => console.log('READY'));
