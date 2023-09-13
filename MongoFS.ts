@@ -1,5 +1,6 @@
 const wd = require('webdav-server').v2;
 const startsWith = require('./helper/utils').startsWith
+const array_equal = require('./helper/utils').array_equeal
 const FileModel = require('./File')
 const gridfs = require('mongoose-gridfs');
 const uploadLimit = process.env.UPLOAD_SIZE_LIMIT ? Number(process.env.UPLOAD_SIZE_LIMIT) : 1024 * 1024 * 1024 * 10
@@ -86,7 +87,6 @@ export class MongoFS extends wd.VirtualFileSystem {
           })
         })))
         .then(() => {
-          console.log("reload")
           return resolve("reload")
         })
     })
@@ -139,7 +139,6 @@ export class MongoFS extends wd.VirtualFileSystem {
     fullpath.shift()
     const fileName = fullpath[fullpath.length - 1]
     const parent_fullpath = fullpath.slice(0, fullpath.length - 1)
-    console.log(parent_fullpath)
     this.reload().then(() => {
       if (resource === undefined)
         return callback(wd.Errors.ResourceNotFound);
@@ -205,7 +204,6 @@ export class MongoFS extends wd.VirtualFileSystem {
             }
             this.reload()
           });
-          console.log("callback stream")
           callback(null, stream);
         }))
     })
@@ -273,7 +271,7 @@ export class MongoFS extends wd.VirtualFileSystem {
             removePath(this, path)
           }
         }
-        removePath(this, path.toString())
+        if (this.resources[path.toString()]) removePath(this, path.toString())
       })
       .then(() => callback())
   }
@@ -282,7 +280,6 @@ export class MongoFS extends wd.VirtualFileSystem {
     const sPathFrom = pathFrom.toString(true)
     const sPathTo = pathTo.toString()
     const movePath = (_this: any, _pathFrom: string, _pathTo: string, _parent_id: string) => new Promise((resolve, reject) => {
-      console.log("pathfrom:" + _pathFrom)
       if (_this.resources[_pathFrom].type.isFile) {
         return FileModel.files.findOne({ "metadata.unique": "/root" + _pathFrom })
           .then((file: any) => {
@@ -366,5 +363,107 @@ export class MongoFS extends wd.VirtualFileSystem {
       })
       .then(() => callback(true))
   }
-  
+
+  protected _rename(pathFrom: any, newName: any, ctx: any, callback: any): void {
+    console.log("rename")
+    console.log(ctx.type)
+    console.log(pathFrom)
+    console.log(newName)
+    const sPathFrom = "/root" + pathFrom.toString()
+    if (newName === "." || newName === "..") return callback(wd.Errors.IllegalArguments)
+    if (newName.includes("/")) return callback(wd.Errors.IllegalArguments)
+    if (newName === "/root") return callback(wd.Errors.IllegalArguments)
+    const fromFullpath = sPathFrom.split("/")
+    fromFullpath.shift()
+    const depth = fromFullpath.length - 1
+    const fromName = fromFullpath[depth]
+    const toFullpath = fromFullpath.slice(0, depth)
+    toFullpath.push(newName)
+    const toCPath = "/" + toFullpath.slice(1, depth + 1).join("/")
+    const toPath = "/root" + toCPath
+    new Promise((resolve, reject) => {
+      return FileModel.files.findOne({ "metadata.unique": toPath }).then((file: any) => {
+        if (file)
+          return resolve(true)
+        else
+          return FileModel.dirs.findOne({ unique: toPath }).then((dir: any) => {
+            if (dir)
+              return resolve(true)
+            else return resolve(false)
+          })
+      })
+    }).then((isExist: any) => {
+      if (isExist) return callback(wd.Errors.ResourceAlreadyExists)
+      else if (ctx.type.isFile) {
+        return FileModel.files.findOne({ "metadata.unique": sPathFrom }).then((file: any) => {
+          if (file.metadata.status === "WAITFOR_AVSCAN") {
+            return file.metadata.status
+          }
+          else {
+            const pushContent = {
+              Type: "rename",
+              Date: new Date,
+              Protocol: "ftp",
+              SourceIP: this.connection.commandSocket.remoteAddress,
+              Info: "RENAME: from " + fromName + " to " + newName
+            }
+            const fullpath = file.metadata.fullpath
+            fullpath.pop()
+            fullpath.push(newName)
+            return FileModel.files.updateOne(
+              { _id: file._id },
+              {
+                $push: { "metadata.accessHistory": pushContent },
+                $set: {
+                  "filename": newName,
+                  "metadata.unique": "/" + fullpath.join("/"),
+                  "metadata.fullpath": fullpath
+                },
+              }
+            ).then((file: any) => callback(true))
+          }
+        })
+      }
+      else if (ctx.type.isDirectory) {
+        return FileModel.dirs.findOneAndUpdate(
+          { unique: sPathFrom },
+          { "dirname": newName }
+        ).then((update_dir: any) => FileModel.dirs.find({})
+          .then((dirs: any) => dirs.map((dir: any) => {
+            const fullpath = update_dir.fullpath
+            if (array_equal(dir.fullpath.slice(0, fullpath.length), fullpath)) {
+              const toFullpath = dir.fullpath
+              toFullpath.splice(fullpath.length - 1, 1, newName)
+              return FileModel.dirs.findOneAndUpdate(
+                { _id: dir._id },
+                {
+                  $set: {
+                    "fullpath": toFullpath,
+                    "unique": "/" + toFullpath.join("/")
+                  }
+                },
+              ).then(() => FileModel.files.find({ "metadata.parent_id": dir._id.toString() }))
+                .then((files: any) => {
+                  return files.map((file: any) => {
+                    const toFileFullpath = file.metadata.fullpath
+                    toFileFullpath.splice(fullpath.length - 1, 1, newName)
+                    return FileModel.files.findOneAndUpdate(
+                      { _id: file._id },
+                      {
+                        $set: {
+                          "metadata.fullpath": toFileFullpath,
+                          "metadata.unique": "/" + toFileFullpath.join("/")
+                        }
+                      },
+                    ).then(() => { })
+                  })
+                })
+            }
+            return
+          })
+          )
+        ).then(() => callback(true))
+      }
+    })
+  }
 } 
